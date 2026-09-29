@@ -18,6 +18,11 @@ balance sheet. It publishes readable CSV tables at:
 5. Open `https://YOUR-GITHUB-NAME.github.io/ivd-sec-data/sheet/manifest.json` to check it worked.
 6. In the Google Sheet's Apps Script, put that address (ending in `/sheet/`) in `DATA_URL`, then Run `update`.
 
+## Full financial statements
+Every annual figure each company reported to the SEC (about 2009 onward), one file per company at
+`company/<SEC CIK>.csv` (look up the CIK in `company/index.csv`). First run: one bulk download.
+Daily runs: only companies that filed a new 10-K, 10-Q, 20-F or 40-F since the last run.
+
 ## Files published
 companies.csv, revenue.csv, net_income.csv, diluted_shares.csv, balance_sheet.csv, and manifest.json
 (update time, a fingerprint per file so the sheet only re-imports changed tables, and the extraction log).
