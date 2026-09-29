@@ -2,7 +2,7 @@ name: SEC data for Google Sheets
 
 on:
   schedule:
-    - cron: "23 2 * * 0"      # every Sunday 02:23 UTC
+    - cron: "23 2 * * *"      # every day 02:23 UTC (only new filings are fetched)
   workflow_dispatch:           # "Run workflow" button
 
 permissions:
@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +33,10 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
         run: python scripts/sec_tables.py _site
+      - name: Update full financial statements (only companies with new filings)
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+        run: python scripts/company_financials.py _site
       - name: Remember what was extracted
         if: always()
         uses: actions/cache/save@v4
