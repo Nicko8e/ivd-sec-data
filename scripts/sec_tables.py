@@ -8,7 +8,6 @@ Output (for the Google Sheet to import):
   <out>/sheet/companies.csv, revenue.csv, net_income.csv, diluted_shares.csv, balance_sheet.csv
   <out>/sheet/manifest.json   update time, a fingerprint per file (the sheet imports only changed files),
                               and the extraction log (what was fetched and when)
-  <out>/sheet/check.json      coverage counts and sample rows, for quick verification
 Cache (kept between runs by GitHub Actions): <cache>/frames/*.json and <cache>/log.json
 """
 import csv, datetime as dt, gzip, hashlib, io, json, os, sys, time, urllib.error, urllib.request
@@ -31,7 +30,7 @@ BALANCE = [("Cash", ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalen
            ("Current debt", ["DebtCurrent", "LongTermDebtCurrent"])]
 
 SPLIT_FACTORS = [2, 3, 4, 5, 6, 7, 8, 10, 15, 20, 25, 30, 40, 50, 100]
-CHECK_TICKERS = ["NVDA", "AAPL", "MSFT", "AMZN", "JPM", "TSLA", "KO"]
+CHECK_TICKERS = ["NVDA", "AAPL", "MSFT", "AMZN", "JPM", "TSLA", "KO", "NFLX"]
 
 def split_adjust(vals):
     """vals: share counts oldest→newest (None allowed). Scale older years when a jump looks like a stock split."""
@@ -132,7 +131,7 @@ def main():
             save_log(log)
 
     # 3) Latest balance sheet: the two newest quarters with broad coverage
-    if due(log, "balance:latest", REFRESH_DAYS) or not log.get("balance:periods"):
+    if due(log, "balance:latest2", REFRESH_DAYS) or not log.get("balance:periods"):
         periods, y, q = [], NOW.year, (NOW.month - 1) // 3 + 1
         for _ in range(6):
             p = f"CY{y}Q{q}I"
@@ -144,7 +143,8 @@ def main():
             for _, tags in BALANCE:
                 for t in tags:
                     if t != BALANCE[0][1][0]: fetch_frame(t, "USD", p)
-        log["balance:latest"] = NOW.isoformat(); log["balance:periods"] = periods; fetched.append("balance:" + ",".join(periods))
+            for t in SHARES: fetch_frame(t, "shares", p[:-1])     # diluted shares for that quarter (e.g. CY2026Q2)
+        log["balance:latest2"] = NOW.isoformat(); log["balance:periods"] = periods; fetched.append("balance:" + ",".join(periods))
     save_log(log)
 
     # 4) Build readable tables
@@ -168,25 +168,27 @@ def main():
             rows.append([c[0], c[1], c[3]] + [mil(v) for v in vals])
         write(fname, ["Ticker", "Company", "SEC CIK"] + [str(y) for y in years], rows)
         tables[fname] = rows
-    cols, as_of = [dict() for _ in BALANCE], {}
+    cols, as_of, qsh, qsh_end = [dict() for _ in BALANCE], {}, {}, {}
     for p in reversed(log.get("balance:periods", [])):          # older first, newest overwrites
         for i, (_, tags) in enumerate(BALANCE):
             for cik, (val, end) in merged(tags, "USD", p).items():
                 cols[i][cik] = val
                 if i == 0 or end > as_of.get(cik, ""): as_of[cik] = end
+        for cik, (val, end) in merged(SHARES, "shares", p[:-1]).items():
+            qsh[cik] = val; qsh_end[cik] = end
     rows = []
     for c in companies:
         v = [m.get(c[3]) for m in cols]
         total = "" if v[2] is None and v[3] is None else mil((v[2] or 0) + (v[3] or 0))
-        rows.append([c[0], c[1], c[3]] + [mil(x) for x in v] + [total, as_of.get(c[3], "")])
-    write("balance_sheet.csv", ["Ticker", "Company", "SEC CIK"] + [b[0] for b in BALANCE] + ["Total debt", "As of"], rows)
+        rows.append([c[0], c[1], c[3]] + [mil(x) for x in v] + [total, as_of.get(c[3], ""), mil(qsh.get(c[3])), qsh_end.get(c[3], "")])
+    write("balance_sheet.csv", ["Ticker", "Company", "SEC CIK"] + [b[0] for b in BALANCE] + ["Total debt", "As of", "Diluted shares, latest quarter (M)", "Quarter ended"], rows)
     tables["balance_sheet.csv"] = rows
 
     # Small check file: how many companies have each figure, plus sample rows (easy to read and verify)
     check = {"updated": NOW.isoformat(timespec="seconds"), "coverage": {}, "samples": {}}
     for fname, rows_ in tables.items():
         width = len(rows_[0]) if rows_ else 0
-        head = ["Ticker", "Company", "SEC CIK"] + ([str(y) for y in years] if fname != "balance_sheet.csv" else [b[0] for b in BALANCE] + ["Total debt", "As of"])
+        head = ["Ticker", "Company", "SEC CIK"] + ([str(y) for y in years] if fname != "balance_sheet.csv" else [b[0] for b in BALANCE] + ["Total debt", "As of", "Diluted shares, latest quarter (M)", "Quarter ended"])
         check["coverage"][fname] = {head[j]: sum(1 for r in rows_ if r[j] != "") for j in range(3, width)}
         check["samples"][fname] = {r[0]: dict(zip(head[3:], r[3:])) for r in rows_ if r[0] in CHECK_TICKERS}
     json.dump(check, open(os.path.join(sheet, "check.json"), "w"), indent=1)
