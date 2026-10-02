@@ -24,6 +24,7 @@ REVENUE = ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "S
            "RevenueFromContractWithCustomerIncludingAssessedTax", "SalesRevenueGoodsNet", "RevenuesNetOfInterestExpense"]
 INCOME = ["NetIncomeLoss", "ProfitLoss"]
 SHARES = ["WeightedAverageNumberOfDilutedSharesOutstanding"]
+EPS = ["EarningsPerShareDiluted"]                     # used to catch share counts filed in the wrong unit
 BALANCE = [("Cash", ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents"]),
            ("Short-term investments", ["ShortTermInvestments", "MarketableSecuritiesCurrent", "AvailableForSaleSecuritiesDebtSecuritiesCurrent"]),
            ("Long-term debt", ["LongTermDebtNoncurrent", "LongTermDebtAndCapitalLeaseObligations"]),
@@ -44,6 +45,24 @@ def split_adjust(vals):
                 for j in range(a + 1):
                     if v[j]: v[j] *= f
                 break
+    return v
+
+def fix_units(shares, ni, eps):
+    """Share counts filed in the wrong unit (e.g. McDonald's: 716.6 instead of 716.6 million): use net income ÷ diluted EPS
+    where the filed count is more than 5x off. Without EPS, scale a tiny count by 1,000 or 1,000,000 to match nearby years."""
+    v = list(shares)
+    for i, x in enumerate(v):
+        n, e = ni[i], eps[i]
+        if n and e and abs(e) >= 0.01 and n / e > 0:
+            implied = n / e
+            if x is None or x <= 0 or x / implied > 5 or x / implied < 0.2: v[i] = implied
+    normal = [x for x in v if x and x >= 1e6]
+    if normal:
+        ref = sorted(normal)[len(normal) // 2]
+        for i, x in enumerate(v):
+            if x and x < 1e5:
+                for k in (1e6, 1e3):
+                    if 0.2 < x * k / ref < 5: v[i] = x * k; break
     return v
 
 _fetch_count = 0
@@ -123,7 +142,7 @@ def main():
     years = list(range(FIRST_YEAR, last_full + 1))
     for y in sorted(years, reverse=True):
         recent = y > last_full - RECENT_YEARS_TO_REFRESH
-        for name, tags, unit in (("revenue", REVENUE, "USD"), ("income", INCOME, "USD"), ("shares", SHARES, "shares")):
+        for name, tags, unit in (("revenue", REVENUE, "USD"), ("income", INCOME, "USD"), ("shares", SHARES, "shares"), ("eps", EPS, "USD-per-shares")):
             key = f"{name}:CY{y}"
             if not due(log, key, REFRESH_DAYS if recent else None): continue
             for t in tags: fetch_frame(t, unit, f"CY{y}")
@@ -159,12 +178,16 @@ def main():
 
     write("companies.csv", ["Ticker", "Company", "Exchange", "SEC CIK", "SEC filings"],
           [c + [f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={c[3]:010d}"] for c in companies])
+    ni_by_year = {y: merged(INCOME, "USD", f"CY{y}") for y in years}
+    eps_by_year = {y: merged(EPS, "USD-per-shares", f"CY{y}") for y in years}
     for fname, tags, unit in (("revenue.csv", REVENUE, "USD"), ("net_income.csv", INCOME, "USD"), ("diluted_shares.csv", SHARES, "shares")):
         by_year = {y: merged(tags, unit, f"CY{y}") for y in years}
         rows = []
         for c in companies:
             vals = [by_year[y].get(c[3], (None,))[0] for y in years]
-            if fname == "diluted_shares.csv": vals = split_adjust(vals)   # restate older years to today's share basis
+            if fname == "diluted_shares.csv":
+                vals = fix_units(vals, [ni_by_year[y].get(c[3], (None,))[0] for y in years], [eps_by_year[y].get(c[3], (None,))[0] for y in years])
+                vals = split_adjust(vals)                                   # restate older years to today's share basis
             rows.append([c[0], c[1], c[3]] + [mil(v) for v in vals])
         write(fname, ["Ticker", "Company", "SEC CIK"] + [str(y) for y in years], rows)
         tables[fname] = rows
@@ -176,6 +199,12 @@ def main():
                 if i == 0 or end > as_of.get(cik, ""): as_of[cik] = end
         for cik, (val, end) in merged(SHARES, "shares", p[:-1]).items():
             qsh[cik] = val; qsh_end[cik] = end
+    ann = {r[2]: next((x for x in reversed(r[3:]) if x != ""), None) for r in tables["diluted_shares.csv"]}   # latest annual, millions
+    for cik, q in list(qsh.items()):
+        if q and q < 1e5:                                   # share count filed in the wrong unit (see fix_units)
+            a = ann.get(cik); qsh[cik] = None
+            for k in (1e6, 1e3):
+                if a and 0.2 < q * k / 1e6 / a < 5: qsh[cik] = q * k; break
     rows = []
     for c in companies:
         v = [m.get(c[3]) for m in cols]
