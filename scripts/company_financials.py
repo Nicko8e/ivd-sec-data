@@ -23,6 +23,7 @@ STORE = os.path.join(FIN, "company")                 # kept between runs
 STATE_FILE = os.path.join(FIN, "state.json")
 TODAY = dt.date.today()
 FULL_REBUILD_AFTER_DAYS = 45                          # if the record is older than this, do a bulk refresh
+RULES = 2                                             # bump when the file-building rules change (2: share-unit fix) -> one bulk rebuild
 
 ANNUAL_FORMS = {"10-K", "10-K/A", "10-KT", "10-KT/A", "20-F", "20-F/A", "40-F", "40-F/A"}
 FILING_FORMS = ANNUAL_FORMS | {"10-Q", "10-Q/A"}
@@ -97,6 +98,8 @@ def company_table(facts):
                         slot[y] = (f["end"], f.get("filed", ""), f["val"])
                 labels[(tag, unit)] = obj.get("label") or tag
     if not cells: return None
+    fixed = fix_share_units(cells)
+    for k in fixed: labels[k] = (labels[k] or k[0]) + " (corrected for a unit error in the filing: net income ÷ EPS)"
     years = sorted({y for s in cells.values() for y in s})
     order = sorted(cells, key=lambda k: (KEY_RANK.get(k[0], 10_000), (labels[k] or "").lower(), k[1]))
     header = ["Line item", "Unit", "SEC tag"] + [f"FY{y}" for y in years]
@@ -106,6 +109,28 @@ def company_table(facts):
         if len(s) < 2 and k[0] not in KEY_RANK: continue        # skip one-off items to keep files small
         rows.append([labels[k], unit_label(k[1]), k[0]] + [scale(k[1], s[y][2]) if y in s else "" for y in years])
     return header, rows, years[0], years[-1]
+
+
+def fix_share_units(cells):
+    """Some filers state share counts in the wrong unit (McDonald's files 716.6 instead of 716.6 million from FY2021).
+    Net income ÷ earnings per share gives the real count; use it where the filed count is more than 5x off."""
+    ni = cells.get(("NetIncomeLoss", "USD")) or cells.get(("ProfitLoss", "USD")) or {}
+    fixed = []
+    for sh_tag, eps_tag in (("WeightedAverageNumberOfDilutedSharesOutstanding", "EarningsPerShareDiluted"),
+                            ("WeightedAverageNumberOfSharesOutstandingBasic", "EarningsPerShareBasic")):
+        sh, eps = cells.get((sh_tag, "shares")), cells.get((eps_tag, "USD/shares")) or {}
+        if sh is None: continue
+        for y in set(ni) & set(eps):
+            n, e = ni[y][2], eps[y][2]
+            if not n or abs(e) < 0.01: continue
+            implied = n / e
+            if implied <= 0: continue
+            v = sh[y][2] if y in sh else None
+            if v is None or v <= 0 or v / implied > 5 or v / implied < 0.2:
+                end, filed = (sh[y][0], sh[y][1]) if y in sh else (ni[y][0], ni[y][1])
+                sh[y] = (end, filed, round(implied))
+                if (sh_tag, "shares") not in fixed: fixed.append((sh_tag, "shares"))
+    return fixed
 
 
 def write_company(cik, facts):
@@ -152,7 +177,7 @@ def main():
     companies = listed_companies()
     built = state.get("built", {})               # ticker -> {cik, first, last, items, updated}
     last = dt.date.fromisoformat(state["last_checked"]) if state.get("last_checked") else None
-    bulk = last is None or (TODAY - last).days > FULL_REBUILD_AFTER_DAYS or not os.path.isdir(STORE)
+    bulk = last is None or (TODAY - last).days > FULL_REBUILD_AFTER_DAYS or not os.path.isdir(STORE) or state.get("rules") != RULES
     done_now = []
 
     if bulk:
@@ -192,7 +217,7 @@ def main():
         try: os.remove(os.path.join(STORE, c + ".csv"))
         except OSError: pass
 
-    state.update({"built": built, "last_checked": TODAY.isoformat(), "last_method": method})
+    state.update({"built": built, "last_checked": TODAY.isoformat(), "last_method": method, "rules": RULES})
     json.dump(state, open(STATE_FILE, "w"))
 
     # publish
