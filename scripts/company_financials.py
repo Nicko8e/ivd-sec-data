@@ -23,7 +23,7 @@ STORE = os.path.join(FIN, "company")                 # kept between runs
 STATE_FILE = os.path.join(FIN, "state.json")
 TODAY = dt.date.today()
 FULL_REBUILD_AFTER_DAYS = 45                          # if the record is older than this, do a bulk refresh
-RULES = 2                                             # bump when the file-building rules change (2: share-unit fix) -> one bulk rebuild
+RULES = 3                                             # bump when the file-building rules change (2: share-unit fix, 3: latest-quarter shares) -> one bulk rebuild
 
 ANNUAL_FORMS = {"10-K", "10-K/A", "10-KT", "10-KT/A", "20-F", "20-F/A", "40-F", "40-F/A"}
 FILING_FORMS = ANNUAL_FORMS | {"10-Q", "10-Q/A"}
@@ -133,11 +133,56 @@ def fix_share_units(cells):
     return fixed
 
 
+def latest_quarter_shares(facts):
+    """Diluted shares from the most recent quarterly result: the latest three-month weighted-average diluted share
+    count in a 10-Q (or 10-K). When the newest report is an annual one with no three-month figure, the fourth quarter
+    is worked out from the full year and the first three quarters. Returns (shares, quarter_end, note) or None."""
+    g = facts.get("us-gaap") or {}
+    def entries(tag, unit):
+        out = {}
+        for f in ((g.get(tag) or {}).get("units") or {}).get(unit, []):
+            if f.get("form") not in FILING_FORMS or not f.get("start") or not f.get("end"): continue
+            days = (dt.date.fromisoformat(f["end"]) - dt.date.fromisoformat(f["start"])).days
+            key = (f["start"], f["end"])
+            if key not in out or f.get("filed", "") > out[key][1]: out[key] = (f["val"], f.get("filed", ""), days)
+        return out
+    sh = entries("WeightedAverageNumberOfDilutedSharesOutstanding", "shares")
+    if not sh: return None
+    ni = entries("NetIncomeLoss", "USD"); eps = entries("EarningsPerShareDiluted", "USD/shares")
+    def fixed(key, v):                                   # same unit-error correction as the annual figures
+        if key in ni and key in eps and abs(eps[key][0]) >= 0.01 and ni[key][0]:
+            implied = ni[key][0] / eps[key][0]
+            if implied > 0 and (v <= 0 or v / implied > 5 or v / implied < 0.2): return implied
+        return v
+    q = {k: v for k, v in sh.items() if 80 <= v[2] <= 100}
+    y = {k: v for k, v in sh.items() if 350 <= v[2] <= 380}
+    best_q = max(q, key=lambda k: k[1]) if q else None
+    best_y = max(y, key=lambda k: k[1]) if y else None
+    if best_y and (not best_q or best_y[1] > best_q[1]):
+        # newest report is annual: Q4 = 4 x full year - Q1 - Q2 - Q3 (all from the same year), when available
+        ys, ye = best_y
+        qs = sorted(k for k in q if k[0] >= ys and k[1] < ye)
+        full = fixed(best_y, y[best_y][0])
+        if len(qs) == 3:
+            parts = [fixed(k, q[k][0]) for k in qs]
+            q4 = 4 * full - sum(parts)
+            if 0.8 < q4 / parts[-1] < 1.25:
+                return q4, ye, "fourth quarter worked out from the annual report"
+        return full, ye, "full-year average from the annual report (no quarterly figure)"
+    if not best_q: return None
+    return fixed(best_q, q[best_q][0]), best_q[1], "quarterly report"
+
+
 def write_company(cik, facts):
     """One file per company, named by SEC CIK (all of a company's tickers share it)."""
     t = company_table(facts)
     if not t: return None
     header, rows, y0, y1 = t
+    lq = latest_quarter_shares(facts)
+    if lq:                                                # shown first; the value sits in the newest year column
+        val, end, how = lq
+        rows.insert(0, [f"Diluted shares, latest quarter (quarter ended {end}; {how})", "shares, millions", "LatestQuarterDilutedShares"]
+                    + [""] * (len(header) - 4) + [round(val / 1e6, 3)])
     os.makedirs(STORE, exist_ok=True)
     with open(os.path.join(STORE, f"{cik}.csv"), "w", newline="") as fh:
         w = csv.writer(fh, lineterminator="\n"); w.writerow(header); w.writerows(rows)
