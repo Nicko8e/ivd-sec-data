@@ -17,7 +17,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +33,10 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
         run: python scripts/sec_tables.py _site
+      - name: Famous investors' portfolios from 13F filings (only new filings)
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+        run: python scripts/investors.py _site
       - name: Update full financial statements (only companies with new filings)
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
