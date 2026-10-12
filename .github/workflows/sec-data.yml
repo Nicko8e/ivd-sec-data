@@ -37,6 +37,11 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
         run: python scripts/investors.py _site
+      - name: Sales by business line from annual reports (only new reports)
+        env:
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
+          SEG_MAX_MINUTES: "90"     # the first run reads every company's latest annual report and may finish over a few days
+        run: python scripts/segments.py
       - name: Update full financial statements (only companies with new filings)
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
@@ -47,6 +52,22 @@ jobs:
         with:
           path: .sec-cache
           key: sec-cache-${{ github.run_id }}
+      # Copy the published files to Cloudflare R2. Only files whose contents changed are uploaded (compared by checksum),
+      # so daily runs stay well inside R2's free monthly allowance. Skipped until the R2 secrets are added.
+      - name: Upload changed files to Cloudflare R2
+        env:
+          RCLONE_CONFIG_R2_TYPE: s3
+          RCLONE_CONFIG_R2_PROVIDER: Cloudflare
+          RCLONE_CONFIG_R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          RCLONE_CONFIG_R2_NO_CHECK_BUCKET: "true"
+          R2_BUCKET: ${{ vars.R2_BUCKET || 'ivd-sec-data' }}
+        run: |
+          if [ -z "$RCLONE_CONFIG_R2_ACCESS_KEY_ID" ]; then echo "R2 secrets not set yet; skipping the upload."; exit 0; fi
+          curl -fsSL https://rclone.org/install.sh | sudo bash
+          rclone sync _site "r2:${R2_BUCKET}" --checksum --fast-list --transfers 32 --checkers 64 \
+            --header-upload "Cache-Control: public, max-age=3600" --stats-one-line --stats 60s
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
