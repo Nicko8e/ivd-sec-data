@@ -22,13 +22,21 @@ cover-page "dei" and others). Two files per company:
 Each row has a **Category** column, and rows are sorted by it:
 
 1. Income statement
-2. Balance sheet
-3. Cash flow
-4. Per share
-5. Shares
-6. Employee share pay
-7. Company information
-8. Other disclosures
+2. Sales by business line (annual files only)
+3. Balance sheet
+4. Cash flow
+5. Per share
+6. Shares
+7. Employee share pay
+8. Company information
+9. Other disclosures
+
+**Sales by business line** comes from `scripts/segments.py`, which reads the XBRL data filed with each annual report,
+because the SEC's company-facts feed leaves out figures broken down by segment. Each row is the company's sales for one
+reportable business segment (`Business segment: …`) or one product or service line (`Product or service: …`), exactly
+as reported, under the company's own name for it. The SEC tag column reads `<concept> [<axis>: <member>]`. The first
+run reads every listed company's latest annual report and may take a few daily runs; afterwards only new annual
+reports are read.
 
 Quarterly amounts are three-month figures. When a company reports only year-to-date amounts (common for cash flow),
 or only the full year for its fourth quarter, the quarter is worked out as the difference. Per-share figures and
