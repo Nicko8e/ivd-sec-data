@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SEC company data</title>
+<meta name="robots" content="noindex">
+<style>
+:root{--bg:#f6f7f9;--panel:#fff;--ink:#1b2430;--muted:#5d6878;--line:#dde2ea;--accent:#2a63c7;--soft:#eef3fc;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#12161c;--panel:#1a2029;--ink:#e6ebf2;--muted:#9aa6b6;--line:#2c3542;--accent:#7aa7ff;--soft:#1f2a3a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 16px 60px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.note{color:var(--muted);font-size:.88rem}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:16px}
+input[type=search]{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
+th{font-size:.8rem;color:var(--muted);font-weight:600}
+td.name{white-space:normal}
+.mono{font-family:var(--mono);font-size:.85rem}
+a{color:var(--accent)}
+button.link{background:none;border:0;padding:0;font:inherit;color:var(--accent);cursor:pointer;text-decoration:underline}
+.scroll{overflow-x:auto}
+#viewer[hidden],#list[hidden]{display:none}
+.vt td,.vt th{font-size:.82rem;padding:4px 8px}
+.vt td.num{text-align:right;font-family:var(--mono)}
+.vt td:first-child,.vt th:first-child{position:sticky;left:0;background:var(--panel);white-space:normal;min-width:260px;max-width:360px}
+.vt tr.cat td{background:var(--soft);font-weight:600;position:static}
+.bar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-bottom:10px}
+.links li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>SEC company data</h1>
+  <p class="note" id="status">Every figure each US-listed company has reported to the SEC, rebuilt daily by the ivd-sec-data job.</p>
+
+  <section class="panel" id="list">
+    <input type="search" id="q" placeholder="Search by ticker or company name, e.g. NVDA or Nvidia" aria-label="Search companies" autofocus>
+    <p class="note" id="count">Loading the company list…</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Ticker</th><th>Company</th><th>Years</th><th>Annual figures</th><th>Quarterly figures</th><th>Updated</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table></div>
+  </section>
+
+  <section class="panel" id="viewer" hidden>
+    <div class="bar">
+      <button class="link" id="back">← All companies</button>
+      <b id="vTitle"></b>
+      <a id="vDownload" href="#" download>Download CSV</a>
+      <input type="search" id="vq" placeholder="Filter line items" aria-label="Filter line items" style="max-width:260px">
+    </div>
+    <p class="note" id="vNote"></p>
+    <div class="scroll"><table class="vt" id="vTable"></table></div>
+  </section>
+
+  <section class="panel">
+    <b>Other files</b>
+    <ul class="links note">
+      <li><a href="company/index.csv">company/index.csv</a>: every ticker with its SEC number (CIK) and file names</li>
+      <li><a href="company/status.json">company/status.json</a>: when the company files were last rebuilt</li>
+      <li><a href="sheet/manifest.json">sheet/manifest.json</a>: the summary tables your Google Sheet imports</li>
+      <li><a href="investors/status.json">investors/status.json</a>: famous investors' portfolios</li>
+    </ul>
+  </section>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function parseCSV(t){            // RFC 4180: quoted fields may hold commas, quotes and line breaks
+  const rows=[]; let row=[], f="", q=false;
+  for(let i=0;i<t.length;i++){ const c=t[i];
+    if(q){ if(c==='"'){ if(t[i+1]==='"'){ f+='"'; i++; } else q=false; } else f+=c; }
+    else if(c==='"') q=true;
+    else if(c===","){ row.push(f); f=""; }
+    else if(c==="\n"){ row.push(f.replace(/\r$/,"")); rows.push(row); row=[]; f=""; }
+    else f+=c; }
+  if(f||row.length){ row.push(f); rows.push(row); }
+  return rows;
+}
+let COS=[];
+async function load(){
+  try{ const s=await (await fetch("company/status.json",{cache:"no-store"})).json();
+    $("status").textContent=`${s.companies_with_files.toLocaleString()} companies. Last rebuilt ${s.updated} (${s.method}). Every figure each US-listed company has reported to the SEC.`; }catch(e){}
+  const r=await fetch("company/index.csv",{cache:"no-store"});
+  if(!r.ok){ $("count").textContent="The company list isn't available yet. Run the job once, then reload."; return; }
+  const [head,...rows]=parseCSV(await r.text()); const k=n=>head.indexOf(n);
+  COS=rows.filter(x=>x.length>3).map(x=>({t:x[k("Ticker")], n:x[k("Company")], cik:x[k("SEC CIK")], y0:x[k("First year")], y1:x[k("Last year")], items:x[k("Annual line items")],
+    lq:x[k("Latest quarter")], qi:x[k("Quarterly line items")], up:x[k("Updated")], af:x[k("Annual file")], qf:x[k("Quarterly file")]}));
+  render(); openFromHash();
+}
+function render(){
+  const q=$("q").value.trim().toLowerCase();
+  const hit=q? COS.filter(c=>c.t.toLowerCase().startsWith(q)||c.n.toLowerCase().includes(q)||c.cik===q) : COS;
+  hit.sort((a,b)=>(b.t.toLowerCase()===q)-(a.t.toLowerCase()===q));
+  const show=hit.slice(0,200);
+  $("count").textContent= q? `${hit.length.toLocaleString()} match${hit.length===1?"":"es"}${hit.length>200?", showing the first 200":""}.` : `${COS.length.toLocaleString()} tickers. Showing the first 200; search to find any company.`;
+  $("rows").innerHTML=show.map(c=>`<tr><td class="mono"><b>${esc(c.t)}</b></td><td class="name">${esc(c.n)}<div class="note mono">CIK ${esc(c.cik)}</div></td><td>${esc(c.y0)}–${esc(c.y1)}</td>
+    <td><button class="link" data-f="${esc(c.af)}" data-t="${esc(c.t)}" data-n="${esc(c.n)}">View</button> · <a href="${esc(c.af)}" download>CSV</a> <span class="note">${esc(c.items)} items</span></td>
+    <td>${c.qf? `<button class="link" data-f="${esc(c.qf)}" data-t="${esc(c.t)}" data-n="${esc(c.n)}" data-q="1">View</button> · <a href="${esc(c.qf)}" download>CSV</a> <span class="note">to ${esc(c.lq)}</span>` : '<span class="note">none</span>'}</td>
+    <td class="note">${esc(c.up)}</td></tr>`).join("");
+}
+let VIEW=null;
+async function view(file, t, n, quarterly){
+  $("list").hidden=true; $("viewer").hidden=false; window.scrollTo(0,0);
+  $("vTitle").textContent=`${t} · ${n} · ${quarterly? "quarterly" : "annual"} figures`;
+  $("vDownload").href=file; $("vNote").textContent="Loading…"; $("vTable").innerHTML=""; $("vq").value="";
+  history.replaceState(null,"","#"+encodeURIComponent(t)+(quarterly?"/q":""));
+  const r=await fetch(file); if(!r.ok){ $("vNote").textContent="This file couldn't be loaded."; return; }
+  const [head,...rows]=parseCSV(await r.text());
+  VIEW={head, rows:rows.filter(x=>x.length>1)}; drawView();
+}
+function drawView(){
+  const {head,rows}=VIEW, c0=head[3]==="Category"? 4 : 3, q=$("vq").value.trim().toLowerCase();
+  const show=rows.filter(r=>!q || r[0].toLowerCase().includes(q) || (r[2]||"").toLowerCase().includes(q));
+  $("vNote").textContent=`${show.length.toLocaleString()} of ${rows.length.toLocaleString()} line items. Amounts in millions unless the unit says otherwise. Hover a line item to see its SEC tag.`;
+  let h=`<thead><tr><th>Line item</th><th>Unit</th>${head.slice(c0).map(y=>`<th class="num">${esc(y.replace("Quarter to ",""))}</th>`).join("")}</tr></thead><tbody>`, cat=null;
+  for(const r of show){
+    if(c0===4 && r[3]!==cat){ cat=r[3]; h+=`<tr class="cat"><td colspan="${head.length-c0+2}">${esc(cat)}</td></tr>`; }
+    h+=`<tr><td title="${esc(r[2])}">${esc(r[0])}</td><td class="note">${esc(r[1])}</td>${head.slice(c0).map((_,j)=>{ const v=r[c0+j]; const n=v===""||v==null? "" : Number(v);
+      return `<td class="num">${n===""? "" : isFinite(n)? n.toLocaleString(undefined,{maximumFractionDigits:3}) : esc(v)}</td>`; }).join("")}</tr>`;
+  }
+  $("vTable").innerHTML=h+"</tbody>";
+}
+function openFromHash(){
+  const m=/^#([^/]+)(\/q)?$/.exec(location.hash); if(!m) return;
+  const t=decodeURIComponent(m[1]).toUpperCase(), c=COS.find(x=>x.t===t); if(!c) return;
+  if(m[2] && c.qf) view(c.qf,c.t,c.n,true); else view(c.af,c.t,c.n,false);
+}
+$("q").addEventListener("input",render);
+$("vq").addEventListener("input",()=>VIEW&&drawView());
+$("rows").addEventListener("click",e=>{ const b=e.target.closest("button[data-f]"); if(b) view(b.dataset.f,b.dataset.t,b.dataset.n,!!b.dataset.q); });
+$("back").onclick=()=>{ $("viewer").hidden=true; $("list").hidden=false; history.replaceState(null,"",location.pathname); };
+load();
+</script>
+</body>
+</html>
