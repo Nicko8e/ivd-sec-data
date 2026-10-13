@@ -2,7 +2,7 @@ name: SEC data for Google Sheets
 
 on:
   schedule:
-    - cron: "23 2 * * *"      # every day 02:23 UTC (only new filings are fetched)
+    - cron: "0 6 * * *"       # every day 06:00 UTC, after the SEC has published the previous US day's filing list (only new filings are fetched)
   workflow_dispatch:           # "Run workflow" button
 
 permissions:
@@ -46,6 +46,8 @@ jobs:
         env:
           SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}
         run: python scripts/company_financials.py _site
+      - name: Browse page (search every company and view its figures)
+        run: cp site/index.html _site/index.html
       - name: Remember what was extracted
         if: always()
         uses: actions/cache/save@v4
