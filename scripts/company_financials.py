@@ -345,18 +345,32 @@ def listed_companies():
     return by_cik
 
 
+def daily_index(day):
+    """The SEC's list of filings for one day, "" for a day with none (weekends, holidays), or None when the list
+    isn't published yet (a missing list older than three days is a holiday). The SEC publishes each day's list late that evening (US time) and answers 403 until then."""
+    if day.weekday() >= 5: return ""
+    q = (day.month - 1) // 3 + 1
+    try: txt = fetch(f"https://www.sec.gov/Archives/edgar/daily-index/{day.year}/QTR{q}/form.{day:%Y%m%d}.idx")
+    except urllib.error.HTTPError as e:
+        if e.code != 403: raise
+        txt = None
+    if txt is None:                                       # missing: not published yet, or a holiday once a few days have passed
+        return "" if day < TODAY - dt.timedelta(days=3) else None
+    return txt
+
+
 def ciks_filed_since(since):
-    """CIKs that filed a 10-K/10-Q/20-F/40-F (or amendment) on each business day after `since`."""
-    ciks, day = set(), since + dt.timedelta(days=1)
+    """CIKs that filed a 10-K/10-Q/20-F/40-F (or amendment) on each business day after `since`, and the last day read
+    (days whose list isn't published yet are read on the next run)."""
+    ciks, day, through = set(), since + dt.timedelta(days=1), since
     while day <= TODAY:
-        if day.weekday() < 5:
-            q = (day.month - 1) // 3 + 1
-            txt = fetch(f"https://www.sec.gov/Archives/edgar/daily-index/{day.year}/QTR{q}/form.{day:%Y%m%d}.idx")
-            for line in (txt or "").splitlines():
-                m = re.match(r"^(\S+(?:/A)?)\s{2,}.*?\s{2,}(\d{1,10})\s{2,}\d{4}-?\d{2}-?\d{2}", line)
-                if m and m.group(1) in FILING_FORMS: ciks.add(int(m.group(2)))
-        day += dt.timedelta(days=1)
-    return ciks
+        txt = daily_index(day)
+        if txt is None: break
+        for line in txt.splitlines():
+            m = re.match(r"^(\S+(?:/A)?)\s{2,}.*?\s{2,}(\d{1,10})\s{2,}\d{4}-?\d{2}-?\d{2}", line)
+            if m and m.group(1) in FILING_FORMS: ciks.add(int(m.group(2)))
+        through = day; day += dt.timedelta(days=1)
+    return ciks, through
 
 
 def main():
@@ -388,7 +402,7 @@ def main():
             except OSError: pass
         method = "bulk"
     else:
-        changed = ciks_filed_since(last)
+        changed, checked_through = ciks_filed_since(last)
         try: changed |= set(json.load(open(os.path.join(CACHE, "seg", "state.json"))).get("updated", []))   # new sales breakdowns
         except Exception: pass
         new = {cik for cik in companies if str(cik) not in built and cik not in state.get("no_data", [])}
@@ -409,7 +423,8 @@ def main():
             try: os.remove(path)
             except OSError: pass
 
-    state.update({"built": built, "last_checked": TODAY.isoformat(), "last_method": method, "rules": RULES})
+    if bulk: checked_through = TODAY - dt.timedelta(days=1)   # the bulk file may miss today's filings; read today's list next run
+    state.update({"built": built, "last_checked": checked_through.isoformat(), "last_method": method, "rules": RULES})
     json.dump(state, open(STATE_FILE, "w"))
 
     # publish
