@@ -77,14 +77,29 @@ def parse_index(txt, out):
         if cik not in out or filed > out[cik][0]: out[cik] = (filed, acc)
 
 
+def daily_index(day):
+    """The SEC's list of filings for one day, "" for a day with none (weekends, holidays), or None when the list
+    isn't published yet (a missing list older than three days is a holiday). The SEC publishes each day's list late that evening (US time) and answers 403 until then."""
+    if day.weekday() >= 5: return ""
+    q = (day.month - 1) // 3 + 1
+    try: txt = fetch(f"https://www.sec.gov/Archives/edgar/daily-index/{day.year}/QTR{q}/form.{day:%Y%m%d}.idx")
+    except urllib.error.HTTPError as e:
+        if e.code != 403: raise
+        txt = None
+    if txt is None:                                       # missing: not published yet, or a holiday once a few days have passed
+        return "" if day < TODAY - dt.timedelta(days=3) else None
+    return txt
+
+
 def annual_reports_since(since):
-    out, day = {}, since + dt.timedelta(days=1)
+    """Annual reports filed on each day after `since`, and the last day read (unpublished days wait for the next run)."""
+    out, day, through = {}, since + dt.timedelta(days=1), since
     while day <= TODAY:
-        if day.weekday() < 5:
-            q = (day.month - 1) // 3 + 1
-            parse_index(fetch(f"https://www.sec.gov/Archives/edgar/daily-index/{day.year}/QTR{q}/form.{day:%Y%m%d}.idx"), out)
-        day += dt.timedelta(days=1)
-    return out
+        txt = daily_index(day)
+        if txt is None: break
+        parse_index(txt, out)
+        through = day; day += dt.timedelta(days=1)
+    return out, through
 
 
 def annual_reports_recent():
@@ -215,7 +230,8 @@ def main():
     done = state.get("done", {})                       # cik -> accession already read
     pending = {int(k): tuple(v) for k, v in state.get("pending", {}).items()}
     last = dt.date.fromisoformat(state["last_checked"]) if state.get("last_checked") else None
-    found = annual_reports_since(last) if last else annual_reports_recent()
+    if last: found, through = annual_reports_since(last)
+    else: found, through = annual_reports_recent(), TODAY - dt.timedelta(days=1)
     for cik, fa in found.items():
         if cik in listed and done.get(str(cik)) != fa[1] and (cik not in pending or fa[0] >= pending[cik][0]): pending[cik] = fa
     updated, read, stopped = [], 0, False
@@ -240,7 +256,7 @@ def main():
         done[str(cik)] = acc
         pending.pop(cik, None)
     state.update({"rules": RULES, "done": done, "pending": {str(k): list(v) for k, v in pending.items()},
-                  "last_checked": TODAY.isoformat(), "updated": updated})
+                  "last_checked": through.isoformat(), "updated": updated})
     json.dump(state, open(STATE_FILE, "w"))
     print(json.dumps({"updated": TODAY.isoformat(), "annual_reports_read": read, "companies_with_new_breakdowns": len(updated),
                       "still_to_read": len(pending), "stopped_for_time": stopped, "sec_requests_this_run": _requests}))
