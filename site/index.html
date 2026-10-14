@@ -22,7 +22,19 @@ td.name{white-space:normal}
 .mono{font-family:var(--mono);font-size:.85rem}
 a{color:var(--accent)}
 button.link{background:none;border:0;padding:0;font:inherit;color:var(--accent);cursor:pointer;text-decoration:underline}
-.scroll{overflow-x:auto}
+/* Tables scroll inside a box no taller than the window, so the sideways scrollbar is always on screen. */
+.scroll{overflow:auto;max-height:calc(100vh - 210px);min-height:240px;border:1px solid var(--line);border-radius:8px;scrollbar-width:auto;scrollbar-color:var(--muted) transparent}
+.scroll::-webkit-scrollbar{height:12px;width:12px}
+.scroll::-webkit-scrollbar-thumb{background:var(--muted);border-radius:6px;border:3px solid var(--panel)}
+.scroll thead th{position:sticky;top:0;background:var(--panel);z-index:2;box-shadow:inset 0 -1px var(--line)}
+.vt thead th:first-child{z-index:3}
+body.viewing .wrap{max-width:none}
+.az{display:flex;flex-wrap:wrap;gap:4px;margin:10px 0 4px;align-items:center}
+.az button{font:600 .85rem/1 var(--mono);min-width:30px;padding:7px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);cursor:pointer}
+.az button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#fff}
+.az button:disabled{opacity:.35;cursor:default}
+.az .sep{width:8px}
+.sbtn{font:inherit;font-size:.85rem;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);cursor:pointer}
 #viewer[hidden],#list[hidden]{display:none}
 .vt td,.vt th{font-size:.82rem;padding:4px 8px}
 .vt td.num{text-align:right;font-family:var(--mono)}
@@ -39,8 +51,14 @@ button.link{background:none;border:0;padding:0;font:inherit;color:var(--accent);
 
   <section class="panel" id="list">
     <input type="search" id="q" placeholder="Search by ticker or company name, e.g. NVDA or Nvidia" aria-label="Search companies" autofocus>
+    <div class="az" id="az" role="group" aria-label="Browse companies alphabetically"></div>
+    <div class="bar note" style="margin:0">
+      <span>Browse by</span>
+      <label><input type="radio" name="by" value="n" checked> company name</label>
+      <label><input type="radio" name="by" value="t"> ticker</label>
+    </div>
     <p class="note" id="count">Loading the company list…</p>
-    <div class="scroll"><table>
+    <div class="scroll" id="listScroll"><table>
       <thead><tr><th>Ticker</th><th>Company</th><th>Years</th><th>Annual figures</th><th>Quarterly figures</th><th>Updated</th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
@@ -52,9 +70,10 @@ button.link{background:none;border:0;padding:0;font:inherit;color:var(--accent);
       <b id="vTitle"></b>
       <a id="vDownload" href="#" download>Download CSV</a>
       <input type="search" id="vq" placeholder="Filter line items" aria-label="Filter line items" style="max-width:260px">
+      <span><button class="sbtn" id="sLeft" title="Scroll to earlier years">◀ Earlier</button> <button class="sbtn" id="sRight" title="Scroll to later years">Later ▶</button></span>
     </div>
     <p class="note" id="vNote"></p>
-    <div class="scroll"><table class="vt" id="vTable"></table></div>
+    <div class="scroll" id="vScroll"><table class="vt" id="vTable"></table></div>
   </section>
 
   <section class="panel">
@@ -81,7 +100,15 @@ function parseCSV(t){            // RFC 4180: quoted fields may hold commas, quo
   if(f||row.length){ row.push(f); rows.push(row); }
   return rows;
 }
-let COS=[];
+let COS=[], LETTER="";
+const LETTERS=[..."ABCDEFGHIJKLMNOPQRSTUVWXYZ"], by=()=>document.querySelector("input[name=by]:checked").value;
+const keyOf=c=>(by()==="t"? c.t : c.n.replace(/^(the|a)\s+/i,"")).toUpperCase();
+const letterOf=c=>{ const ch=keyOf(c)[0]||"#"; return ch>="A"&&ch<="Z"? ch : "#"; };
+function drawAZ(){
+  const have=new Set(COS.map(letterOf));
+  $("az").innerHTML=`<button data-l="" aria-pressed="${!LETTER}">All</button><span class="sep"></span>`+[...LETTERS,"#"].map(l=>
+    `<button data-l="${l}" aria-pressed="${LETTER===l}" ${have.has(l)?"":"disabled"} title="${l==="#"?"Starting with a number or symbol":"Starting with "+l}">${l==="#"?"0–9":l}</button>`).join("");
+}
 async function load(){
   try{ const s=await (await fetch("company/status.json",{cache:"no-store"})).json();
     $("status").textContent=`${s.companies_with_files.toLocaleString()} companies. Last rebuilt ${s.updated} (${s.method}). Every figure each US-listed company has reported to the SEC.`; }catch(e){}
@@ -90,14 +117,18 @@ async function load(){
   const [head,...rows]=parseCSV(await r.text()); const k=n=>head.indexOf(n);
   COS=rows.filter(x=>x.length>3).map(x=>({t:x[k("Ticker")], n:x[k("Company")], cik:x[k("SEC CIK")], y0:x[k("First year")], y1:x[k("Last year")], items:x[k("Annual line items")],
     lq:x[k("Latest quarter")], qi:x[k("Quarterly line items")], up:x[k("Updated")], af:x[k("Annual file")], qf:x[k("Quarterly file")]}));
-  render(); openFromHash();
+  drawAZ(); render(); openFromHash();
 }
 function render(){
   const q=$("q").value.trim().toLowerCase();
-  const hit=q? COS.filter(c=>c.t.toLowerCase().startsWith(q)||c.n.toLowerCase().includes(q)||c.cik===q) : COS;
-  hit.sort((a,b)=>(b.t.toLowerCase()===q)-(a.t.toLowerCase()===q));
-  const show=hit.slice(0,200);
-  $("count").textContent= q? `${hit.length.toLocaleString()} match${hit.length===1?"":"es"}${hit.length>200?", showing the first 200":""}.` : `${COS.length.toLocaleString()} tickers. Showing the first 200; search to find any company.`;
+  let hit=q? COS.filter(c=>c.t.toLowerCase().startsWith(q)||c.n.toLowerCase().includes(q)||c.cik===q) : COS;
+  if(LETTER) hit=hit.filter(c=>letterOf(c)===LETTER);
+  hit=[...hit].sort((a,b)=>keyOf(a).localeCompare(keyOf(b)));
+  if(q) hit.sort((a,b)=>(b.t.toLowerCase()===q)-(a.t.toLowerCase()===q));
+  const cap=LETTER? Infinity : 200, show=hit.slice(0,cap);
+  const what=LETTER? ` ${by()==="t"?"ticker":"company name"}${hit.length===1?"":"s"} starting with ${LETTER==="#"?"a number or symbol":LETTER}` : "";
+  $("count").textContent= (q||LETTER)? `${hit.length.toLocaleString()}${what}${q?" matching your search":""}${hit.length>cap?", showing the first "+cap:""}.` : `${COS.length.toLocaleString()} tickers, A to Z. Showing the first 200; pick a letter or search to find any company.`;
+  $("listScroll").scrollTop=0;
   $("rows").innerHTML=show.map(c=>`<tr><td class="mono"><b>${esc(c.t)}</b></td><td class="name">${esc(c.n)}<div class="note mono">CIK ${esc(c.cik)}</div></td><td>${esc(c.y0)}–${esc(c.y1)}</td>
     <td><button class="link" data-f="${esc(c.af)}" data-t="${esc(c.t)}" data-n="${esc(c.n)}">View</button> · <a href="${esc(c.af)}" download>CSV</a> <span class="note">${esc(c.items)} items</span></td>
     <td>${c.qf? `<button class="link" data-f="${esc(c.qf)}" data-t="${esc(c.t)}" data-n="${esc(c.n)}" data-q="1">View</button> · <a href="${esc(c.qf)}" download>CSV</a> <span class="note">to ${esc(c.lq)}</span>` : '<span class="note">none</span>'}</td>
@@ -105,7 +136,7 @@ function render(){
 }
 let VIEW=null;
 async function view(file, t, n, quarterly){
-  $("list").hidden=true; $("viewer").hidden=false; window.scrollTo(0,0);
+  $("list").hidden=true; $("viewer").hidden=false; document.body.classList.add("viewing"); window.scrollTo(0,0);
   $("vTitle").textContent=`${t} · ${n} · ${quarterly? "quarterly" : "annual"} figures`;
   $("vDownload").href=file; $("vNote").textContent="Loading…"; $("vTable").innerHTML=""; $("vq").value="";
   history.replaceState(null,"","#"+encodeURIComponent(t)+(quarterly?"/q":""));
@@ -124,6 +155,7 @@ function drawView(){
       return `<td class="num">${n===""? "" : isFinite(n)? n.toLocaleString(undefined,{maximumFractionDigits:3}) : esc(v)}</td>`; }).join("")}</tr>`;
   }
   $("vTable").innerHTML=h+"</tbody>";
+  const el=$("vScroll"); el.scrollLeft=el.scrollWidth;   // start at the latest years
 }
 function openFromHash(){
   const m=/^#([^/]+)(\/q)?$/.exec(location.hash); if(!m) return;
@@ -131,9 +163,13 @@ function openFromHash(){
   if(m[2] && c.qf) view(c.qf,c.t,c.n,true); else view(c.af,c.t,c.n,false);
 }
 $("q").addEventListener("input",render);
+$("az").addEventListener("click",e=>{ const b=e.target.closest("button[data-l]"); if(!b||b.disabled) return; LETTER=b.dataset.l; drawAZ(); render(); });
+document.querySelectorAll("input[name=by]").forEach(r=>r.addEventListener("change",()=>{ LETTER=""; drawAZ(); render(); }));
+const scrollBy=d=>{ const el=$("vScroll"); el.scrollBy({left:d*el.clientWidth*0.8,behavior:"smooth"}); };
+$("sLeft").onclick=()=>scrollBy(-1); $("sRight").onclick=()=>scrollBy(1);
 $("vq").addEventListener("input",()=>VIEW&&drawView());
 $("rows").addEventListener("click",e=>{ const b=e.target.closest("button[data-f]"); if(b) view(b.dataset.f,b.dataset.t,b.dataset.n,!!b.dataset.q); });
-$("back").onclick=()=>{ $("viewer").hidden=true; $("list").hidden=false; history.replaceState(null,"",location.pathname); };
+$("back").onclick=()=>{ $("viewer").hidden=true; $("list").hidden=false; document.body.classList.remove("viewing"); history.replaceState(null,"",location.pathname); };
 load();
 </script>
 </body>
